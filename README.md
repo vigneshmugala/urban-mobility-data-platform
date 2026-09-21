@@ -1,4 +1,4 @@
-# Urban Mobility Data Intelligence Platform
+# urban-mobility-data-platform
 # 🚕 Urban Mobility Data Intelligence Platform
 
 A production-style **data engineering platform** for ingesting, cleaning, validating, incrementally processing, and modeling large-scale urban mobility data into reliable analytics-ready datasets.
