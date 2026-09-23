@@ -1,0 +1,9 @@
+version: 2
+sources:
+  - name: bronze
+    database: urban-mobility-data-platform-dev
+    schema: bronze
+
+
+    tables:
+      - name: yellow_trips_raw

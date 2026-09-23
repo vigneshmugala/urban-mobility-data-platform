@@ -1,3 +1,5 @@
+**/profiles.yml
+
 .venv/
 __pycache__/
 *.pyc
