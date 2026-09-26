@@ -7,3 +7,4 @@ sources:
 
     tables:
       - name: yellow_trips_raw
+      - name: taxi_lookup_table

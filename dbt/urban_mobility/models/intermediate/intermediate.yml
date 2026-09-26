@@ -1,0 +1,45 @@
+version: 2
+
+models:
+
+    - name: int_yellow_trip_cleaned
+      columns:
+        - name: _record_hash
+          data_tests:
+            - not_null
+            - unique
+        - name: tpep_pickup_datetime
+          data_tests:
+            - not_null
+        - name: tpep_dropoff_datetime
+          data_tests:
+            - not_null
+        - name: passenger_count
+          data_tests:
+            - not_null 
+        - name: trip_distance
+          data_tests:
+            - not_null 
+        - name: total_amount
+          data_tests: 
+            - not_null
+
+
+    - name: int_yellow_trip_taxi_zone_map
+      columns:
+        - name: _record_hash
+          data_tests:
+            - not_null
+            - unique
+        - name: PULocationID
+          data_tests:
+            - not_null 
+        - name: DOLocationID
+          data_tests:
+            - not_null
+        - name: pickup_zone
+          data_tests:
+            - not_null
+        - name: drop_zone
+          data_tests:
+            - not_null
