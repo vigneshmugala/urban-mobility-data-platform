@@ -15,10 +15,6 @@ with incremental_query AS (
     WHERE 
         _source_month > (SELECT MAX(_source_month) FROM {{this}})
 
-    {% else %}
-    WHERE 
-        _source_month <= '2026-03'
-
     {% endif %}
 )
 

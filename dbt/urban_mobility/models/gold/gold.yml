@@ -1,0 +1,43 @@
+version: 2
+
+models:
+  - name: dim_taxi_zone
+    columns:
+      - name: LocationID
+        data_tests:
+          - not_null
+          - unique
+
+      - name: Borough
+        data_tests:
+          - not_null
+
+      - name: Zone
+        data_tests:
+          - not_null
+
+      - name: service_zone
+        data_tests:
+          - not_null
+  - name: daily_metrics
+    columns:
+      - name: pickup_date
+        data_tests:
+          - not_null
+
+      - name: PULocationID
+        data_tests:
+          - not_null
+  - name: hourly_demand_metrics
+    columns:
+      - name: pickup_date
+        data_tests:
+          - not_null
+
+      - name: PULocationID
+        data_tests:
+          - not_null
+
+      - name: pickup_hour
+        data_tests:
+          - not_null

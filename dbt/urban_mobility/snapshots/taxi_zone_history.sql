@@ -12,7 +12,6 @@
    }
 )}}
 
-
-SELECT LocationID, Borough, Zone, service_zone FROM {{source('bronze', 'taxi_lookup_TEST')}}
+SELECT LocationID, Borough, Zone, service_zone FROM {{source('bronze', 'taxi_lookup_table')}}
 
 {% endsnapshot %}
