@@ -1,719 +1,872 @@
-# urban-mobility-data-platform
-# 🚕 Urban Mobility Data Intelligence Platform
+# Urban Mobility Data Platform
 
-A production-style **data engineering platform** for ingesting, cleaning, validating, incrementally processing, and modeling large-scale urban mobility data into reliable analytics-ready datasets.
+Production-style batch data platform for NYC Yellow Taxi Trip Data, built with **Python, PySpark, Databricks, Delta Lake, SQL, dbt, and Git**.
 
-The project is designed around real-world data engineering problems rather than a simple ETL demonstration: **duplicate records, changing source data, incremental loads, historical tracking, data-quality failures, idempotent processing, and repeatable pipeline execution.**
+The platform ingests monthly NYC TLC Yellow Taxi Parquet files and automatically processes new data through a **Bronze → Silver → Gold** architecture before refreshing an analytics dashboard.
 
-> **Project Status:** In Development
-> **Primary Goal:** Build an end-to-end, production-style data pipeline suitable for portfolio and interview demonstration.
+The pipeline is designed around practical data-engineering concerns including **incremental processing, file-level idempotency, record-level deduplication, MERGE-based upserts, data-quality validation, current-state dimensions, SCD Type 2 history, automated dbt testing, and workflow orchestration**.
 
 ---
 
-## 🎯 Project Objective
-
-Urban mobility generates large volumes of trip and operational data. A useful analytics platform must do more than simply load this data.
-
-It needs to:
-
-* ingest raw source data reliably
-* preserve the original source layer
-* validate and clean incoming records
-* handle duplicate and late-arriving records
-* process only new or changed data
-* synchronize source changes with target tables
-* preserve historical dimension changes
-* produce trusted analytical datasets
-* provide data-quality checks and pipeline observability
-* support repeatable and idempotent processing
-
-This project implements those concepts using a modern **lakehouse-style architecture**.
-
----
-
-# 🏗️ Architecture
+## Architecture
 
 ```text
-                    PUBLIC MOBILITY DATA
-                            │
-                            ▼
-                    PYTHON INGESTION
-                            │
-                            ▼
-                  ┌──────────────────┐
-                  │   BRONZE / RAW   │
-                  │  Databricks /    │
-                  │    Delta Lake    │
-                  └────────┬─────────┘
+NYC TLC Monthly Parquet Files
+            │
+            ▼
+┌───────────────────────────────┐
+│      Databricks Job           │
+│                               │
+│  1. Bronze Ingestion          │
+│  2. dbt Build                 │
+│  3. Dashboard Refresh         │
+└───────────────┬───────────────┘
+                │
+                ▼
+           BRONZE LAYER
+                │
+        ┌───────┴────────┐
+        │                │
+        ▼                ▼
+yellow_trips_raw   ingestion_audit
+        │                │
+        └───────┬────────┘
+                ▼
+           SILVER LAYER
+                │
+      ┌─────────┼─────────────────┐
+      ▼         ▼                 ▼
+   staging   cleaned          zone mapping
+                │
+                ▼
+      incremental trip fact
+                │
+      ┌─────────┴──────────┐
+      ▼                    ▼
+taxi_zone_current      taxi_zone_history
                            │
-                           ▼
-                  ┌──────────────────┐
-                  │     PYSPARK      │
-                  │                  │
-                  │ Schema Validation│
-                  │ Cleaning         │
-                  │ Deduplication    │
-                  │ Transformations  │
-                  └────────┬─────────┘
-                           │
-                           ▼
-                  ┌──────────────────┐
-                  │ SILVER / CURATED │
-                  │      Delta       │
-                  └────────┬─────────┘
-                           │
-                     MERGE / SCD2
-                           │
-                           ▼
-                  ┌──────────────────┐
-                  │       dbt        │
-                  │   SQL + Jinja    │
-                  │                  │
-                  │ Models           │
-                  │ Tests            │
-                  │ Documentation    │
-                  └────────┬─────────┘
-                           │
-                           ▼
-                  ┌──────────────────┐
-                  │  GOLD / BUSINESS │
-                  │     MODELS       │
-                  └────────┬─────────┘
-                           │
-                           ▼
-                 DATABRICKS SQL / BI
-                           │
-                           ▼
-                       ANALYTICS
+                         SCD2
+                │
+                ▼
+             GOLD LAYER
+                │
+       ┌────────┼──────────────┐
+       ▼        ▼              ▼
+   fct_trips  dim_taxi_zone  analytics
+                              │
+                    ┌─────────┴──────────┐
+                    ▼                    ▼
+             daily_analytics   hourly_demand_metrics
+                    │
+                    └─────────┬──────────┘
+                              ▼
+                  Urban Mobility Dashboard
 ```
 
 ---
 
-# 🧰 Technology Stack
+## What the pipeline does
 
-| Technology        | Purpose                                                    |
-| ----------------- | ---------------------------------------------------------- |
-| **Python**        | Data ingestion, utilities, validation, pipeline logic      |
-| **SQL**           | Data transformation, analytical queries, incremental logic |
-| **PySpark**       | Distributed data processing and transformation             |
-| **Apache Spark**  | Large-scale data processing engine                         |
-| **Databricks**    | Lakehouse compute, Spark execution and data platform       |
-| **Delta Lake**    | Reliable storage and transactional table layer             |
-| **Unity Catalog** | Data governance and cataloging                             |
-| **dbt Core**      | SQL transformation, modeling and testing                   |
-| **Jinja**         | Dynamic/reusable SQL generation inside dbt                 |
-| **Git/GitHub**    | Version control and project management                     |
-
----
-
-# 📊 Data Source
-
-The primary source is the **NYC Taxi & Limousine Commission (TLC) Trip Record Data**.
-
-The dataset contains trip-level information such as pickup/drop-off timestamps and locations, trip distance, fares, payment information, and passenger counts.
-
-The TLC publishes the trip data as Parquet files and updates the collection periodically.
-
-**Important:** This project is designed as an **incremental batch-processing pipeline**, not as a real-time traffic streaming system. The source's publication cadence determines when new source data becomes available.
-
-Data source:
-
-**NYC Taxi & Limousine Commission — TLC Trip Record Data**
-
----
-
-# 🔄 Pipeline Flow
-
-## 1. Ingestion
-
-Python retrieves incoming source files and registers ingestion metadata.
-
-Example metadata:
+A new monthly file can be dropped into the Databricks source Volume:
 
 ```text
-batch_id
-source_file
-ingestion_timestamp
-source_period
-record_count
+yellow_tripdata_2026-05.parquet
+yellow_tripdata_2026-06.parquet
+yellow_tripdata_2026-07.parquet
 ```
 
-The ingestion layer is designed to be repeatable and restartable.
+The pipeline automatically:
+
+1. Discovers available Yellow Taxi files.
+2. Checks the ingestion audit table for previously processed files.
+3. Processes only new files.
+4. Adds ingestion metadata.
+5. Generates a deterministic SHA-256 record fingerprint.
+6. MERGEs records into the Bronze Delta table.
+7. Transforms and validates data through dbt.
+8. Incrementally updates Silver models.
+9. Maintains current and historical taxi-zone dimensions.
+10. Builds Gold analytics tables.
+11. Runs dbt data-quality tests.
+12. Refreshes the published Databricks dashboard.
 
 ---
 
-## 2. Bronze Layer
+## Technology Stack
 
-Raw source data is stored with minimal transformation.
+| Technology                 | Purpose                                       |
+| -------------------------- | --------------------------------------------- |
+| Python                     | Ingestion and pipeline logic                  |
+| PySpark                    | Distributed data processing                   |
+| Databricks                 | Compute, notebooks, Jobs and SQL              |
+| Unity Catalog              | Catalog and schema management                 |
+| Delta Lake                 | Transactional storage and MERGE operations    |
+| SQL                        | Transformation and analytics                  |
+| dbt Core                   | Data transformation, dependencies and testing |
+| dbt-databricks             | Databricks adapter for dbt                    |
+| Jinja                      | Dynamic dbt SQL configuration                 |
+| Git / GitHub               | Source control and project management         |
+| Databricks AI/BI Dashboard | Analytics visualization                       |
 
-Example:
+---
+
+## Data Source
+
+The project uses the **NYC Taxi & Limousine Commission (TLC) Trip Record Data**.
+
+The primary dataset used is:
+
+**Yellow Taxi Trip Record Data**
+
+Monthly Parquet files were used for the project, initially covering January–April 2026 and subsequently extended through July 2026 for end-to-end pipeline testing.
+
+A taxi-zone lookup dataset is also used to enrich trips with:
+
+* Borough
+* Zone
+* Service zone
+
+The source data is treated as an external input to the platform and is not modified directly.
+
+---
+
+# Data Architecture
+
+## Bronze
+
+Bronze preserves the source data with ingestion metadata.
+
+### `bronze.yellow_trips_raw`
+
+Contains the original Yellow Taxi trip records plus:
 
 ```text
-mobility.bronze.trip_raw
-```
-
-The Bronze layer preserves source information and provides a recoverable landing point for downstream processing.
-
-Typical metadata fields:
-
-```text
-_ingested_at
-_batch_id
+_record_hash
 _source_file
+_source_month
+_ingested_at
+_ingestion_batch_id
 ```
 
----
+The raw source values are retained so downstream validation or reprocessing can occur without losing the original ingestion payload.
 
-## 3. Data Quality & Validation
+### `bronze.ingestion_audit`
 
-Incoming records are validated before becoming trusted data.
-
-Examples:
+Tracks successfully processed input files:
 
 ```text
-✓ Required fields are present
-✓ Correct data types
-✓ Valid timestamps
-✓ Valid trip distances
-✓ Valid monetary values
-✓ Valid location identifiers
-✓ Duplicate detection
-✓ Referential checks
+source_file
+source_month
+status
+record_count
+processed_at
 ```
 
-Invalid records can be separated or quarantined instead of silently entering trusted datasets.
+This table provides the file-level ingestion control mechanism.
 
 ---
 
-# 🧹 4. Data Cleaning & Transformation
+# Silver
 
-PySpark is used to perform scalable transformations.
+Silver contains cleaned, standardized and enriched data.
 
-Typical operations include:
+### `stg_yellow_trips`
+
+dbt staging model over the Bronze source.
+
+### `int_yellow_trips_cleaned`
+
+Applies business/data-quality rules including:
+
+* Pickup and dropoff timestamps must exist.
+* Trip distance must be greater than zero.
+* Dropoff must occur after pickup.
+* Total amount must not be negative.
+* Passenger count must be greater than zero.
+
+Derived fields include:
 
 ```text
-Data type standardization
-Null handling
-Column normalization
-Business-rule validation
-Derived columns
-Filtering invalid records
-Joining reference data
+trip_duration_minutes
+pickup_date
+pickup_hour
 ```
 
-The goal is to create a reliable Silver dataset.
+Invalid records are filtered downstream rather than deleting information from Bronze.
 
----
+### `int_yellow_trip_taxi_zone_map`
 
-# 🔁 5. Deduplication
+Enriches trips using pickup and dropoff taxi-zone attributes.
 
-Source systems can produce multiple records for the same business entity or event.
+### `fct_int_yellow_trip_enriched`
 
-The pipeline uses window functions such as:
+Incrementally maintained trip-level Silver fact.
 
-```sql
-ROW_NUMBER() OVER (
-    PARTITION BY business_key
-    ORDER BY updated_at DESC
-)
-```
-
-to identify the latest valid record.
-
-Conceptually:
+Configuration:
 
 ```text
-Multiple source records
-        ↓
-PARTITION BY business key
-        ↓
-Order newest → oldest
-        ↓
-ROW_NUMBER()
-        ↓
-Keep rn = 1
+materialized = incremental
+incremental_strategy = merge
+unique_key = _record_hash
 ```
 
-This creates a deterministic source dataset before incremental synchronization.
+The model uses `_source_file` to identify previously processed files, allowing new files to be added without depending on sequential month arrival.
 
 ---
 
-# ⚡ 6. Incremental Processing
+# Idempotency
 
-The pipeline is designed to avoid unnecessarily reprocessing the entire historical dataset.
+The pipeline provides protection at two levels.
 
-Instead:
+## File-level idempotency
+
+The ingestion audit table records successfully processed source files.
+
+For example:
 
 ```text
-Existing Target
-      +
-New / Changed Source Records
-      ↓
-Incremental Processing
-      ↓
-Target Update
+yellow_tripdata_2026-05.parquet
 ```
 
-This allows the pipeline to process only relevant new or changed data.
+is recorded using its full source path.
 
----
-
-# 🔀 7. MERGE
-
-After preparing the source dataset, Databricks `MERGE` logic synchronizes the curated target.
-
-Conceptually:
+When the ingestion notebook runs again, the file is detected as already processed and skipped.
 
 ```text
-Source Record
-      │
-      ▼
-Does business key exist?
-      │
-   ┌──┴──┐
-   │     │
-  YES    NO
-   │     │
-UPDATE  INSERT
+First run:
+May → PROCESS
+
+Second run:
+May → SKIP
 ```
 
-The pipeline also avoids ambiguous merges by deduplicating source records before synchronization.
+## Record-level protection
+
+Every source record receives a deterministic SHA-256 fingerprint:
+
+```text
+_record_hash
+```
+
+The Bronze Delta table uses this fingerprint during MERGE operations.
+
+This prevents identical source records from being inserted repeatedly.
+
+Together:
+
+```text
+File-level control
+        +
+Record-level protection
+        =
+Idempotent ingestion
+```
 
 ---
 
-# 🕒 8. SCD Type 2
+# Incremental Processing
 
-Selected dimensions maintain historical changes using **Slowly Changing Dimension Type 2** logic.
+The pipeline is designed for monthly batch arrivals.
 
 Example:
 
 ```text
-vehicle_id | operator | valid_from | valid_to | is_current
------------|----------|------------|----------|-----------
-101        | Company A| 2026-01-01 | 2026-08-15 | 0
-101        | Company B| 2026-08-15 | NULL       | 1
+January
+February
+March
+April
 ```
 
-Instead of overwriting history, the system preserves previous versions.
+Initial processing loads the available data.
 
-This enables historical analysis such as:
-
-> "Which operator was associated with this entity during a specific period?"
-
----
-
-# 🥈 Silver Layer
-
-Silver contains cleaned, validated and curated datasets.
-
-Potential datasets include:
+Later:
 
 ```text
-mobility.silver.trips
-mobility.silver.trip_events
-mobility.silver.vehicle_history
-mobility.silver.location_reference
+May arrives
 ```
 
-The exact model names may evolve during development.
+Only May is newly ingested.
 
-Silver represents:
-
-> **Trusted data suitable for downstream transformation.**
-
----
-
-# 🥇 Gold Layer
-
-Gold contains business-oriented datasets designed for analytics.
-
-Examples:
+Later:
 
 ```text
-mobility.gold.daily_trip_metrics
-mobility.gold.hourly_demand
-mobility.gold.zone_performance
-mobility.gold.revenue_metrics
-mobility.gold.trip_duration_metrics
+June arrives
 ```
 
-Example metrics:
+Only June is newly ingested.
+
+The ingestion process does not require hard-coded month lists.
+
+The same mechanism also supports a late-arriving file:
 
 ```text
-Total Trips
-Total Revenue
-Average Trip Distance
-Average Trip Duration
-Demand by Hour
-Demand by Location
-Peak Periods
-Payment Distribution
-```
+January
+February
+March
+April
+June
 
-The Gold layer is intended to be consumed by analytics tools and SQL users.
-
----
-
-# 🧱 dbt Transformation Layer
-
-dbt is used primarily for SQL-based transformation and analytical modeling.
-
-Example model:
-
-```sql
-SELECT
-    DATE(pickup_datetime) AS trip_date,
-    pickup_zone,
-    COUNT(*) AS total_trips,
-    AVG(trip_distance) AS avg_distance,
-    SUM(fare_amount) AS total_revenue
-FROM {{ ref('silver_trips') }}
-GROUP BY
-    DATE(pickup_datetime),
-    pickup_zone
-```
-
-dbt provides:
-
-```text
-Models
-Sources
-ref()
-Tests
-Jinja
-Macros
-Documentation
-Incremental models
-Dependency management
-```
-
-The dbt project is developed locally using dbt Core and executes transformations against Databricks.
-
----
-
-# 🧪 Data Quality
-
-The project treats data quality as part of the pipeline rather than an afterthought.
-
-Example checks:
-
-```text
-Primary key uniqueness
-Required fields not null
-Accepted values
-Valid numeric ranges
-Valid timestamps
-Referential integrity
-Duplicate detection
-```
-
-Example dbt test:
-
-```yaml
-columns:
-  - name: trip_id
-    tests:
-      - unique
-      - not_null
-```
-
-The pipeline should fail or quarantine problematic data where appropriate instead of silently producing unreliable analytical results.
-
----
-
-# 🔄 Idempotency
-
-A major engineering requirement of the project is **idempotent processing**.
-
-If the same input batch is processed twice:
-
-```text
-Run 1 → correct target state
-Run 2 → same correct target state
-```
-
-The second execution should not create:
-
-```text
-duplicate trips
-duplicate revenue
-duplicate dimension records
-```
-
-This is achieved through deterministic record identification, deduplication and incremental synchronization logic.
-
----
-
-# 🛠️ Failure & Recovery Scenarios
-
-The pipeline is designed to demonstrate how production systems handle failure.
-
-Examples:
-
-### Duplicate source records
-
-```text
-Detect duplicates
         ↓
-Keep latest valid record
+
+May arrives later
+
         ↓
-Continue processing
+
+May is detected as a new source file
 ```
 
-### Invalid records
+This avoids relying on:
 
 ```text
-Validation failure
-        ↓
-Quarantine / reject
-        ↓
-Continue valid records
+MAX(_source_month)
 ```
 
-### Failed batch
+as the sole indicator of new data.
+
+---
+
+# Current-State Dimension
+
+## `silver.taxi_zone_current`
+
+Maintains the latest known taxi-zone attributes.
+
+Business key:
 
 ```text
-Pipeline failure
-      ↓
-Identify missing batch
-      ↓
-Backfill
-      ↓
-Reprocess safely
+LocationID
 ```
 
-### Repeated execution
+The current-state table uses MERGE semantics so changed attributes overwrite the current version.
+
+This is useful for consumers that only need the latest taxi-zone information.
+
+---
+
+# Slowly Changing Dimension Type 2
+
+## `silver.taxi_zone_history`
+
+Taxi-zone history is maintained using a dbt Snapshot with the **check strategy**.
+
+Tracked attributes:
 
 ```text
-Same batch
-    ↓
-Idempotent processing
-    ↓
-No duplicate target records
+Borough
+Zone
+service_zone
+```
+
+Example:
+
+```text
+LocationID = 161
+
+Old:
+Zone = Midtown Center
+
+New:
+Zone = Midtown Center - Updated
+```
+
+The historical record remains available while the new version becomes the current record.
+
+Metadata columns include:
+
+```text
+valid_from
+valid_till
+dbt_scd_id
+```
+
+Current version:
+
+```text
+valid_till IS NULL
+```
+
+Historical version:
+
+```text
+valid_till IS NOT NULL
+```
+
+A separate test/simulation source was used to safely demonstrate source changes without modifying the original raw reference dataset.
+
+---
+
+# Gold Layer
+
+Gold contains analytics-ready models intended for business and reporting use.
+
+## `gold.fct_trips`
+
+Trip-level analytics fact table.
+
+Contains cleaned and enriched trip-level information including:
+
+* Trip timestamps
+* Duration
+* Distance
+* Passenger information
+* Pickup/dropoff zones
+* Boroughs
+* Service zones
+* Payment information
+* Fare components
+* Total revenue
+
+## `gold.dim_taxi_zone`
+
+Current taxi-zone dimension used by analytical consumers.
+
+## `gold.daily_analytics`
+
+Daily metrics by pickup date and pickup zone.
+
+Grain:
+
+```text
+pickup_date + PULocationID
+```
+
+Metrics include:
+
+```text
+total_trips
+total_revenue
+total_tips
+avg_trip_revenue
+avg_trip_distance
+avg_trip_duration_minutes
+avg_passenger_count
+```
+
+## `gold.hourly_demand_metrics`
+
+Hourly demand metrics by pickup date, hour and pickup zone.
+
+Grain:
+
+```text
+pickup_date + pickup_hour + PULocationID
+```
+
+This enables analysis of demand patterns throughout the day.
+
+---
+
+# Data Quality
+
+dbt tests are used to validate model contracts.
+
+Examples include:
+
+```text
+not_null
+unique
+```
+
+and custom singular tests for composite grains such as:
+
+```text
+daily_analytics:
+pickup_date + PULocationID
+
+hourly_demand_metrics:
+pickup_date + pickup_hour + PULocationID
+```
+
+A successful pipeline requires the associated dbt build/tests to pass before downstream orchestration continues.
+
+---
+
+# Orchestration
+
+The complete workflow is orchestrated through a Databricks Job.
+
+```text
+┌─────────────────────────────┐
+│ ingest_yellow_taxi          │
+│ Notebook Task               │
+└──────────────┬──────────────┘
+               │
+               ▼
+┌─────────────────────────────┐
+│ dbt_build                   │
+│ dbt build                   │
+└──────────────┬──────────────┘
+               │
+               ▼
+┌─────────────────────────────┐
+│ refresh_dashboard           │
+│ Dashboard Task              │
+└─────────────────────────────┘
+```
+
+The result is an end-to-end workflow:
+
+```text
+New File
+   ↓
+Ingestion
+   ↓
+Bronze
+   ↓
+Silver
+   ↓
+Gold
+   ↓
+Data Quality Tests
+   ↓
+Dashboard Refresh
 ```
 
 ---
 
-# 📁 Repository Structure
+# Dashboard
+
+The project includes an **Urban Mobility Intelligence** dashboard built on Gold-layer datasets.
+
+Example analytical views include:
+
+### KPI Summary
+
+* Total trips
+* Total revenue
+* Average trip distance
+* Average trip duration
+* Average trip revenue
+
+### Daily Trip Volume
+
+Daily trend of total taxi trips.
+
+### Top Pickup Zones
+
+Pickup zones ranked by trip volume.
+
+### Revenue by Borough
+
+Revenue distribution across boroughs.
+
+### Demand by Hour
+
+Hourly trip-demand distribution.
+
+Because the dashboard is downstream of the pipeline, newly ingested monthly data becomes visible after a successful workflow execution and dashboard refresh.
+
+---
+
+# Repository Structure
 
 ```text
 urban-mobility-data-platform/
 │
-├── README.md
-│
 ├── ingestion/
-│   ├── ingest.py
-│   └── config.py
 │
 ├── pyspark/
-│   ├── bronze/
-│   ├── silver/
-│   ├── transformations/
-│   └── utils/
+│   └── notebooks/
 │
 ├── sql/
-│   ├── exploratory/
-│   ├── validation/
-│   └── analytics/
 │
 ├── dbt/
-│   ├── dbt_project.yml
-│   ├── models/
-│   │   ├── staging/
-│   │   ├── intermediate/
-│   │   └── marts/
-│   ├── snapshots/
-│   ├── macros/
-│   ├── tests/
-│   └── seeds/
-│
-├── tests/
-│
-├── docs/
-│   ├── architecture/
-│   ├── data_dictionary/
-│   └── diagrams/
+│   └── urban_mobility/
+│       ├── models/
+│       │   ├── staging/
+│       │   ├── intermediate/
+│       │   └── gold/
+│       │
+│       ├── snapshots/
+│       ├── macros/
+│       ├── seeds/
+│       ├── tests/
+│       └── dbt_project.yml
 │
 ├── config/
+├── docs/
+├── data/
 │
-└── requirements.txt
+├── tests/
+├── README.md
+├── requirements.txt
+└── .gitignore
 ```
 
----
-
-# 📈 Analytics
-
-Gold datasets can be queried through **Databricks SQL** and used to create analytical visualizations.
-
-Example dashboard sections:
-
-### Mobility Demand
-
-* Trips by hour
-* Trips by day
-* Trips by location
-* Peak demand periods
-
-### Operational Performance
-
-* Average trip duration
-* Average trip distance
-* Revenue
-* Trip volume trends
-
-### Data Reliability
-
-* Records ingested
-* Records rejected
-* Duplicate records
-* Late-arriving records
-* Pipeline execution metrics
-
-The analytics layer sits **on top of the Gold models**, keeping business-facing queries separated from raw processing logic.
+Credentials and local dbt profiles are intentionally excluded from version control.
 
 ---
 
-# 🔐 Data Architecture Principles
+# Running the Project
 
-The project follows these principles:
+## 1. Prepare source data
 
-### Separation of layers
+Place the monthly Yellow Taxi Parquet files in the configured Databricks Volume.
+
+Example:
 
 ```text
-Bronze → source-oriented
-Silver → trusted/curated
-Gold   → business-oriented
+/Volumes/urban-mobility-data-platform-dev/source/data/
 ```
 
-### Incremental over unnecessary full refresh
+## 2. Run ingestion
 
-Process new and changed data whenever possible.
+Execute the Bronze ingestion notebook.
 
-### Data quality by design
-
-Validate before publishing trusted datasets.
-
-### Idempotent execution
-
-A retry should not corrupt the target.
-
-### Historical preservation
-
-Use SCD Type 2 where business history matters.
-
-### Reproducibility
-
-Everything possible is represented as code and tracked in Git.
-
-### Clear responsibility between tools
+The notebook automatically:
 
 ```text
-Python
-→ ingestion / utilities
+discovers files
+      ↓
+checks ingestion_audit
+      ↓
+processes new files
+      ↓
+MERGEs into Bronze
+      ↓
+records successful ingestion
+```
 
-PySpark
-→ scalable data engineering
+## 3. Run dbt
 
-Databricks / Delta
-→ lakehouse processing and storage
+From the dbt project:
 
-SQL
-→ analytical transformation
+```bash
+dbt build
+```
 
-dbt + Jinja
-→ modular SQL modeling and testing
+For individual models:
+
+```bash
+dbt run --select model_name
+```
+
+For tests:
+
+```bash
+dbt test --select model_name
+```
+
+For the SCD2 snapshot:
+
+```bash
+dbt snapshot --select taxi_zone_history
+```
+
+## 4. Production-style orchestration
+
+The Databricks Job executes:
+
+```text
+Bronze ingestion
+      ↓
+dbt build
+      ↓
+Dashboard refresh
 ```
 
 ---
 
-# 🚀 Future Enhancements
+# Idempotency Demonstration
 
-Potential future improvements include:
+The pipeline was explicitly tested by repeatedly executing the same ingestion process.
 
-* Pipeline orchestration
-* Automated scheduling
+Example:
+
+```text
+May uploaded
+    ↓
+May ingested
+    ↓
+Run pipeline again
+    ↓
+May detected as already processed
+    ↓
+May skipped
+```
+
+Bronze record counts were cross-validated against Silver and Gold outputs to verify that new monthly data flowed through the complete pipeline without creating duplicate data.
+
+---
+
+# Example End-to-End Scenario
+
+Suppose the platform currently contains data through April:
+
+```text
+Jan → Apr
+```
+
+A new file is uploaded:
+
+```text
+yellow_tripdata_2026-05.parquet
+```
+
+The workflow executes:
+
+```text
+May file
+   ↓
+Bronze ingestion
+   ↓
+Silver transformations
+   ↓
+Incremental fact MERGE
+   ↓
+Gold models
+   ↓
+dbt tests
+   ↓
+Dashboard refresh
+```
+
+The dashboard then reflects the additional May data.
+
+Uploading June and July follows exactly the same mechanism without modifying the pipeline code.
+
+---
+
+# Engineering Concepts Demonstrated
+
+This project intentionally focuses on practical data-engineering concepts rather than simply demonstrating syntax.
+
+### Data Engineering
+
+* Batch ingestion
+* Data lake architecture
+* Medallion architecture
+* Distributed processing
+* Delta Lake
+* Incremental pipelines
+* MERGE operations
+* Data-quality validation
+* Deduplication
+* Idempotency
+* Late-arriving data
+* SCD Type 2
+* Data lineage and model dependencies
+* Workflow orchestration
+* Analytics serving
+
+### dbt
+
+* Sources
+* `source()`
+* `ref()`
+* Incremental models
+* Jinja
+* Snapshots
+* Tests
+* Model contracts
+* Custom schema generation
+* Dependency-aware builds
+
+### Databricks
+
+* Unity Catalog
+* Volumes
+* Delta tables
+* SQL Warehouse
+* Notebooks
+* Git integration
+* Jobs
+* Dashboard refresh workflows
+
+---
+
+# Design Decisions
+
+## Why SHA-256 record hashes?
+
+The source dataset does not provide a simple universal trip identifier.
+
+A deterministic hash provides a reproducible fingerprint of the source record and can be used for exact-duplicate detection and idempotent MERGE operations.
+
+It is treated as a **record fingerprint**, not as an officially guaranteed business identifier.
+
+## Why keep raw invalid records in Bronze?
+
+Bronze acts as the source-preservation layer.
+
+Data-quality rules are applied downstream so that the original ingested data remains available for investigation and reprocessing.
+
+## Why SCD Type 2?
+
+Taxi-zone reference attributes can change over time.
+
+Current-state consumers need the latest values, while historical analysis may need to know what the attributes looked like at a previous point in time.
+
+The project therefore demonstrates both:
+
+```text
+Current state → taxi_zone_current
+History       → taxi_zone_history
+```
+
+## Why batch rather than streaming?
+
+The selected NYC TLC Yellow Taxi data is provided as monthly trip-record files.
+
+The project therefore intentionally implements **incremental batch processing** rather than pretending that the source is real-time streaming data.
+
+---
+
+# Future Improvements
+
+Possible production extensions include:
+
+* Automated source-file landing from cloud object storage
+* Schema evolution handling
+* File-content checksums/version tracking
+* Alerting and failure notifications
 * More sophisticated data observability
-* Additional mobility sources
-* Streaming ingestion
-* More advanced performance optimization
+* Parameterized backfills
+* Environment-specific deployment
 * CI/CD for dbt
-* Automated deployment
-* Advanced analytics and forecasting
+* Additional analytical dimensions
+* More granular operational monitoring
 
-These are deliberately outside the initial implementation scope so the core pipeline remains reliable and explainable.
+These are intentionally outside the current project scope.
 
 ---
 
-# 🎯 What This Project Demonstrates
+# Project Goal
 
-This project is intended to demonstrate practical knowledge of:
+The purpose of this project is to demonstrate an end-to-end data-engineering workflow where a new source file can move through the complete platform:
 
 ```text
-SQL
-Python
-PySpark
-Apache Spark
-Databricks
-Delta Lake
-Unity Catalog
-dbt
-Jinja
-Window Functions
-CTEs
-MERGE
-Incremental Loads
-SCD Type 2
-Data Quality
-Data Validation
-Deduplication
+SOURCE
+  ↓
+BRONZE
+  ↓
+SILVER
+  ↓
+GOLD
+  ↓
+QUALITY CHECKS
+  ↓
+DASHBOARD
+```
+
+while maintaining:
+
+```text
+Incremental Processing
+        +
 Idempotency
-Error Handling
-Git
+        +
+Data Quality
+        +
+Historical Tracking
+        +
+Orchestration
+        +
+Analytics
 ```
-
-More importantly, it demonstrates the ability to reason about a complete data pipeline:
-
-```text
-How does data arrive?
-        ↓
-How is it stored?
-        ↓
-How do we validate it?
-        ↓
-How do we handle bad data?
-        ↓
-How do we remove duplicates?
-        ↓
-How do we process only changes?
-        ↓
-How do we maintain history?
-        ↓
-How do we transform it?
-        ↓
-How do we expose it for analytics?
-        ↓
-How do we safely rerun the pipeline?
-```
-
----
-
-# 📌 Project Philosophy
-
-This project intentionally focuses on **engineering decisions rather than technology count**.
-
-The goal is not to use every modern data tool.
-
-The goal is to build a pipeline that is:
-
-**Reliable → Repeatable → Incremental → Testable → Explainable**
-
-and to be able to explain why each architectural decision was made.
 
 ---
 
 ## Author
 
-Built as a hands-on Data Engineering portfolio project.
-
-**Primary technologies:** Python · SQL · PySpark · Databricks · Delta Lake · dbt · Jinja · Git
-
+Built as a hands-on data-engineering portfolio project using NYC TLC Yellow Taxi data.
