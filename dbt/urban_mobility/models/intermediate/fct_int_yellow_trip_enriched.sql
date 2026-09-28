@@ -7,13 +7,17 @@
 with incremental_query AS (
     SELECT 
         * FROM
-        {{ref("int_yellow_trip_taxi_zone_map")}}
+        {{ref("int_yellow_trip_taxi_zone_map")}} AS s
 
 
     -- INCREMENTAL condition
     {% if is_incremental() %}
-    WHERE 
-        _source_month > (SELECT MAX(_source_month) FROM {{this}})
+
+    WHERE NOT EXISTS (
+         SELECT 1
+         FROM {{this}} AS t 
+         WHERE t._source_file = s._source_file
+    )
 
     {% endif %}
 )
